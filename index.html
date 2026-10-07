@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Inventaire privé</title>
+<style>
+body{margin:0;background:#f2f2f7;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#111}
+.wrap{max-width:720px;margin:auto;padding:18px}.card{background:#fff;border-radius:20px;padding:18px;margin:12px 0;box-shadow:0 2px 12px #0001}
+h1{margin:0 0 8px}button{border:0;border-radius:12px;padding:14px 16px;font-size:16px;font-weight:700;cursor:pointer}
+.primary{background:#111;color:#fff}.secondary{background:#e8e8ed}input{width:100%;box-sizing:border-box;padding:13px;border:1px solid #ddd;border-radius:11px;margin:7px 0 12px;font-size:16px}
+video{width:100%;border-radius:16px;background:#000;display:block}#app{display:none}.msg{padding:11px;border-radius:10px;background:#eef4ff;margin:10px 0}
+table{width:100%;border-collapse:collapse}th,td{padding:9px 5px;border-bottom:1px solid #eee;text-align:left;font-size:14px}
+.small{font-size:13px;color:#666}.danger{color:#b00020}
+</style>
+</head>
+<body>
+<div class="wrap">
+<section id="login" class="card">
+<h1>🔐 Inventaire privé</h1>
+<p>Connexion nécessaire.</p>
+<input id="pw" type="password" placeholder="Mot de passe" autocomplete="current-password">
+<button class="primary" id="loginBtn">Se connecter</button>
+<div id="loginMsg" class="danger"></div>
+</section>
+
+<section id="app">
+<div class="card">
+<h1>📷 Scanner produit</h1>
+<p class="small">Le site doit être ouvert en HTTPS pour que l'iPhone autorise la caméra.</p>
+<video id="video" playsinline></video>
+<div class="msg" id="status">Appuie sur « Démarrer la caméra ».</div>
+<button class="primary" id="start">Démarrer la caméra</button>
+<button class="secondary" id="stop">Arrêter</button>
+</div>
+
+<div class="card">
+<h3>Dernier scan</h3>
+<input id="company" placeholder="Entreprise">
+<input id="ref" placeholder="Référence">
+<input id="product" placeholder="Nom du produit">
+<button class="primary" id="add">Ajouter au tableau</button>
+</div>
+
+<div class="card">
+<h3>Produits : <span id="count">0</span></h3>
+<table><thead><tr><th>Entreprise</th><th>Référence</th><th>Produit</th></tr></thead>
+<tbody id="rows"></tbody></table>
+<br>
+<button class="primary" id="export">Exporter CSV pour Excel</button>
+<button class="secondary" id="clear">Vider</button>
+<button class="secondary" id="logout">Se déconnecter</button>
+</div>
+</section>
+</div>
+
+<script>
+/*
+  IMPORTANT : ce mot de passe est une protection d'interface uniquement.
+  Pour un vrai site privé sur Internet, il faut une authentification côté serveur.
+*/
+const PASSWORD="Abdou1234"; // À CHANGER AVANT MISE EN LIGNE
+let stream=null, detector=null;
+let data=JSON.parse(localStorage.getItem("inventairePrive")||"[]");
+
+const $=id=>document.getElementById(id);
+function render(){
+ $("count").textContent=data.length;
+ $("rows").innerHTML=data.map(x=>`<tr><td>${esc(x.Entreprise)}</td><td>${esc(x.Référence)}</td><td>${esc(x["Nom du produit"])}</td></tr>`).join("");
+ localStorage.setItem("inventairePrive",JSON.stringify(data));
+}
+function esc(s){return String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[c]));}
+function add(c,r,p){
+ data.push({Entreprise:c||"",Référence:r||"","Nom du produit":p||""});
+ render(); $("status").textContent="✅ Produit ajouté.";
+}
+function parse(text){
+ if(/^https?:\/\//i.test(text)){
+   try{
+     const u=new URL(text);
+     let company=u.hostname.toLowerCase().includes("legrand")?"Legrand":"";
+     let ref=u.searchParams.get("ref")||u.searchParams.get("reference")||u.searchParams.get("sku")||"";
+     let product="";
+     const path=decodeURIComponent(u.pathname).split("/").filter(Boolean);
+     if(path.length) product=path[path.length-1].replace(/[-_]+/g," ").replace(/\b\w/g,x=>x.toUpperCase());
+     return [company,ref,product];
+   }catch(e){}
+ }
+ const a=text.split("|");
+ return a.length>=3?[a[0],a[1],a.slice(2).join("|")]:["",text,""];
+}
+$("loginBtn").onclick=()=>{
+ if($("pw").value===PASSWORD){
+   $("login").style.display="none";$("app").style.display="block";$("loginMsg").textContent="";
+ }else $("loginMsg").textContent="Mot de passe incorrect.";
+};
+$("pw").addEventListener("keydown",e=>{if(e.key==="Enter")$("loginBtn").click();});
+
+$("start").onclick=async()=>{
+ try{
+   if(!("BarcodeDetector" in window)){
+     $("status").textContent="⚠️ Ce navigateur ne fournit pas BarcodeDetector. Il faudra utiliser la version Raccourcis ou un lecteur QR dédié.";
+     return;
+   }
+   detector=new BarcodeDetector({formats:["qr_code"]});
+   stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:"environment"}},audio:false});
+   $("video").srcObject=stream; await $("video").play();
+   $("status").textContent="📷 Caméra active — présente le QR code.";
+   scanLoop();
+ }catch(e){$("status").textContent="❌ Caméra refusée ou site non sécurisé. Ouvre le site en HTTPS et autorise la caméra.";}
+};
+async function scanLoop(){
+ if(!stream)return;
+ try{
+   const codes=await detector.detect($("video"));
+   if(codes.length){
+     const [c,r,p]=parse(codes[0].rawValue);
+     $("company").value=c;$("ref").value=r;$("product").value=p;
+     add(c,r,p);stop();
+     return;
+   }
+ }catch(e){}
+ requestAnimationFrame(scanLoop);
+}
+function stop(){
+ if(stream){stream.getTracks().forEach(t=>t.stop());stream=null;}
+ $("video").srcObject=null;
+}
+$("stop").onclick=stop;
+$("add").onclick=()=>{add($("company").value,$("ref").value,$("product").value);$("company").value=$("ref").value=$("product").value="";};
+$("clear").onclick=()=>{if(confirm("Vider tous les produits ?")){data=[];render();}};
+$("logout").onclick=()=>{stop();$("app").style.display="none";$("login").style.display="block";$("pw").value="";};
+$("export").onclick=()=>{
+ const rows=[["Entreprise","Référence","Nom du produit"],...data.map(x=>[x.Entreprise,x.Référence,x["Nom du produit"]])];
+ const csv="\ufeff"+rows.map(r=>r.map(v=>`"${String(v??"").replace(/"/g,'""')}"`).join(";")).join("\n");
+ const a=document.createElement("a");a.href=URL.createObjectURL(new Blob([csv],{type:"text/csv;charset=utf-8"}));a.download="inventaire_produits.csv";a.click();
+};
+render();
+</script>
+</body>
+</html>
